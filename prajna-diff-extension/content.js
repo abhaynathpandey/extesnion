@@ -1018,10 +1018,109 @@ function runAnalysis(manual){
          return;
       }
       
+      var badDataCount = (apiResult.vertical_checks || []).filter(function(v){ return v.has_bad_data; }).length;
+      var clusterCount = (apiResult.horizontal_clustering || []).length;
+      
       var html = '<div class="status-line">'+n+' GTINs Analyzed by Gemini Vision AI</div>';
       
-      // Render Images
-      html += '<div class="img-section" style="animation:slideUp .4s .1s ease both;"><div class="img-sec-hdr">Extracted Images</div><div class="multi-scroll"><div style="display:flex;gap:1px;background:#f0f0f0;">';
+      // 1. Top Summary Pills
+      html += '<div class="cat-row" style="animation:slideUp .4s .05s ease both;">';
+      html += '<div class="cat-box"><div class="cat-lbl">CATEGORY</div><div class="cat-val">GENERAL</div></div>';
+      html += '<div class="cat-box"><div class="cat-lbl">GTINS</div><div class="cat-val">'+n+'</div></div>';
+      html += '<div class="cat-box"><div class="cat-lbl">BAD DATA</div><div class="cat-val" style="color:'+(badDataCount>0?'#c0392b':'#15803d')+'">'+badDataCount+'</div></div>';
+      html += '<div class="cat-box"><div class="cat-lbl">CLUSTERS</div><div class="cat-val" style="color:'+(clusterCount>1?'#c0392b':'#15803d')+'">'+clusterCount+'</div></div>';
+      html += '</div>';
+
+      // 2. Verdict / AI Result AT THE TOP
+      if (apiResult.horizontal_clustering && apiResult.horizontal_clustering.length > 0) {
+          if (clusterCount === 1 && badDataCount === 0) {
+              html += '<div class="verdict-card dup" style="animation:slideUp .4s .08s ease both;"><div class="v-icon">✓</div><div class="v-txt">All ' + n + ' GTINs are identical</div><div class="v-reason">No bad data or clustering differences found by AI.</div></div>';
+          } else {
+             html += '<div class="diff-table" style="animation:slideUp .4s .08s ease both">';
+             html += '<div class="diff-hdr" style="background:#f0f4ff;border-color:#c5c8ff;color:#3d3df5">'+
+                '🤖 Phase 2: AI Duplicate Clusters <span class="diff-badge" style="background:#3d3df5">'+clusterCount+'</span>'+
+              '</div>';
+              
+              apiResult.horizontal_clustering.forEach(function(c) {
+                 html += '<div class="drow" style="flex-direction:column; align-items:stretch;">' + 
+                     '<div class="dlbl" style="color:#3d3df5;">' + esc(c.cluster_name) + '</div>' + 
+                     '<div style="padding:6px 10px 2px; font-size:11px; color:#333;"><b>Products:</b> ' + esc(c.product_ids.join(', ')) + '</div>' +
+                     '<div style="padding:4px 10px 8px; font-size:11px; font-style:italic; color:#666;">' + esc(c.reason) + '</div>' +
+                     '</div>';
+              });
+              html += '</div>';
+          }
+      }
+
+      // 3. Phase 1 (Bad Data)
+      var badData = apiResult.vertical_checks ? apiResult.vertical_checks.filter(function(v){ return v.has_bad_data; }) : [];
+      if (badData.length > 0) {
+        html+='<div class="diff-table" style="animation:slideUp .4s .1s ease both">'+
+          '<div class="diff-hdr" style="background:#fdecea;border-color:#f5b7b7;color:#c0392b">'+
+            '🔴 Phase 1: Bad Data Detected <span class="diff-badge" style="background:#c0392b">'+badData.length+'</span>'+
+          '</div>';
+        badData.forEach(function(v){
+            if (v.mismatch_details && v.mismatch_details.length > 0) {
+              v.mismatch_details.forEach(function(m) {
+                 html += '<div class="drow" style="flex-direction:column; align-items:stretch;">'+
+                         '<div class="dlbl" style="color:#92400e; width:100%;">' + esc(v.product_id) + ' · ' + esc(m.field) + '</div>'+
+                         '<div class="dvals">'+
+                           '<div class="dval red"><b>Image:</b> ' + esc(m.imageValue) + '</div>'+
+                           '<div class="dval red"><b>Attr:</b> ' + esc(m.textValue) + '</div>'+
+                         '</div>'+
+                         '<div style="padding:4px 10px 8px; font-size:10px; font-style:italic; color:#666;">'+esc(v.reason)+'</div>'+
+                         '</div>';
+              });
+            } else {
+                 html += '<div class="drow" style="flex-direction:column; align-items:stretch;">'+
+                         '<div class="dlbl" style="color:#92400e; width:100%;">' + esc(v.product_id) + '</div>'+
+                         '<div style="padding:8px 10px; font-size:11px; color:#c0392b;">'+esc(v.reason)+'</div>'+
+                         '</div>';
+            }
+        });
+        html+='</div>';
+      }
+
+      // 4. Attribute Table
+      var allAttrs = {};
+      products.forEach(function(p) { Object.keys(p.attrs||{}).forEach(function(k){ allAttrs[k]=1; }); });
+      var attrKeys = Object.keys(allAttrs);
+      
+      var sameAttrs = [];
+      var diffAttrs = [];
+      
+      attrKeys.forEach(function(k) {
+          var vals = products.map(function(p){ return p.attrs[k] || '—'; });
+          var allSame = vals.every(function(v){ return v === vals[0]; });
+          if(allSame) sameAttrs.push({key: k, val: vals[0]});
+          else diffAttrs.push({key: k, vals: vals});
+      });
+      
+      if(sameAttrs.length > 0) {
+          html += '<div class="match-all" style="animation:slideUp .4s .15s ease both;">';
+          html += '<div class="match-all-hdr">✓ MATCHING ACROSS ALL GTINS</div>';
+          sameAttrs.forEach(function(attr) {
+              html += '<div class="match-row"><div class="match-field">'+esc(attr.key)+'</div><div class="match-val">'+esc(attr.val)+'</div></div>';
+          });
+          html += '</div>';
+      }
+      
+      if(diffAttrs.length > 0) {
+          html += '<div class="diff-table" style="animation:slideUp .4s .15s ease both;">';
+          html += '<div class="diff-hdr" style="background:#fdecea;color:#c0392b;border-bottom:1px solid #f5b7b7;">⚠ DIFFERING ATTRIBUTES</div>';
+          html += '<div class="diff-col-hdr"><div>Attribute</div>';
+          for(var i=0;i<n;i++) html += '<div>GTIN#'+(i+1)+'</div>';
+          html += '</div>';
+          diffAttrs.forEach(function(attr) {
+              html += '<div class="drow"><div class="dvals"><div class="dval" style="color:#c0392b;font-weight:700;">'+esc(attr.key)+'</div>';
+              for(var i=0;i<n;i++) html += '<div class="dval">'+esc(attr.vals[i])+'</div>';
+              html += '</div></div>';
+          });
+          html += '</div>';
+      }
+
+      // 5. Extracted Images
+      html += '<div class="img-section" style="animation:slideUp .4s .2s ease both;"><div class="img-sec-hdr">Extracted Images</div><div class="multi-scroll"><div style="display:flex;gap:1px;background:#f0f0f0;">';
       products.forEach(function(p, i){
          html += '<div class="img-cell"><div class="img-lbl">GTIN#'+(i+1)+'</div><div style="display:flex; flex-wrap:wrap; gap:4px; justify-content:center;">';
          var allImgs = [];
@@ -1031,9 +1130,7 @@ function runAnalysis(manual){
          else if (p.img2) allImgs.push(p.img2);
          if (p.imageUrls && allImgs.length === 0) allImgs.push.apply(allImgs, p.imageUrls);
 
-         // unique images only
          allImgs = allImgs.filter(function(item, pos) { return allImgs.indexOf(item) === pos; });
-
          if(allImgs.length > 0) {
              allImgs.forEach(function(src) {
                  html += '<img src="'+esc(src)+'" onerror="this.style.display=\'none\'" style="width:40px; height:40px; object-fit:contain; border-radius:4px; border:1px solid #ddd;">';
@@ -1045,56 +1142,24 @@ function runAnalysis(manual){
       });
       html += '</div></div></div>';
 
-      // Render Descriptions
-      html += '<div class="diff-table" style="animation:slideUp .4s .1s ease both;"><div class="diff-hdr" style="background:#fafafa;color:#555;border-bottom:1px solid #eee;">Descriptions</div><div class="drow"><div class="dvals">';
-      products.forEach(function(p, i) {
-          html += '<div class="dval" style="font-size:10px; max-height:100px; overflow-y:auto; border-right:1px solid #eee; padding:6px;">' + (esc(p.description) || '<i style="color:#ccc">Empty</i>') + '</div>';
-      });
-      html += '</div></div></div>';
-
-      // Render Vertical Checks (Bad Data)
-      var badData = apiResult.vertical_checks ? apiResult.vertical_checks.filter(function(v){ return v.has_bad_data; }) : [];
-      if (badData.length > 0) {
-        html+='<div class="diff-table" style="animation:slideUp .4s .1s ease both">'+
-          '<div class="diff-hdr" style="background:#fdecea;border-color:#f5b7b7;color:#c0392b">'+
-            '🔴 Phase 1: Bad Data Detected <span class="diff-badge" style="background:#c0392b">'+badData.length+'</span>'+
-          '</div>';
-        badData.forEach(function(v){
-          html+='<div class="drow" style="background:#fff8e1; border-left:3px solid #c0392b; flex-direction:column; align-items:flex-start;">'+
-            '<div class="dlbl" style="color:#92400e; font-weight:bold; width:100%; border:none;">GTIN: ' + esc(v.product_id) + '</div>'+
-            '<div style="padding:4px 10px; font-size:11px;">' + esc(v.reason) + '</div>';
-            
-            if (v.mismatch_details && v.mismatch_details.length > 0) {
-              v.mismatch_details.forEach(function(m) {
-                 html += '<div style="padding:4px 10px; font-size:10px;">' +
-                         '<b>' + esc(m.field) + '</b>: Image shows <span style="color:red">"' + esc(m.imageValue) + '"</span>, Text says <span style="color:red">"' + esc(m.textValue) + '"</span></div>';
-              });
-            }
-          html+='</div>';
-        });
-        html+='</div>';
-      } else {
-        html+='<div class="diff-table" style="animation:slideUp .4s .1s ease both">'+
-          '<div class="diff-hdr" style="background:#dcfce7;border-color:#bbf7d0;color:#15803d">'+
-            '🟢 Phase 1: No Bad Data Detected <span class="diff-badge" style="background:#15803d">0</span>'+
-          '</div></div>';
-      }
-
-      // Render Horizontal Clusters
-      if (apiResult.horizontal_clustering && apiResult.horizontal_clustering.length > 0) {
-         html += '<div class="diff-table" style="animation:slideUp .4s .3s ease both">';
-         html += '<div class="diff-hdr" style="background:#f0f4ff;border-color:#c5c8ff;color:#3d3df5">'+
-            '🤖 Phase 2: AI Duplicate Clusters <span class="diff-badge" style="background:#3d3df5">'+apiResult.horizontal_clustering.length+'</span>'+
-          '</div>';
-          
-          apiResult.horizontal_clustering.forEach(function(c) {
-             html += '<div class="drow" style="flex-direction:column; align-items:flex-start;">' + 
-                 '<div style="font-weight:bold; color:#3d3df5; padding:5px 10px;">' + esc(c.cluster_name) + '</div>' + 
-                 '<div style="padding:2px 10px; font-size:11px; color:#555;"><b>Products:</b> ' + esc(c.product_ids.join(', ')) + '</div>' +
-                 '<div style="padding:4px 10px; font-size:11px;"><b>AI Reasoning:</b> ' + esc(c.reason) + '</div>' +
-                 '</div>';
-          });
+      // 6. Descriptions
+      var allDescsSame = products.every(function(p) { return p.description === products[0].description; });
+      if(allDescsSame) {
+          html += '<div class="match-all" style="animation:slideUp .4s .25s ease both;">';
+          html += '<div class="match-all-hdr">✓ MATCHING DESCRIPTION</div>';
+          html += '<div style="font-size:10px; color:#444; max-height:100px; overflow-y:auto; line-height:1.4;">' + (esc(products[0].description) || '<i style="color:#ccc">Empty</i>') + '</div>';
           html += '</div>';
+      } else {
+          html += '<div class="diff-table" style="animation:slideUp .4s .25s ease both;">';
+          html += '<div class="diff-hdr" style="background:#fdecea;color:#c0392b;border-bottom:1px solid #f5b7b7;">⚠ DIFFERING DESCRIPTIONS</div>';
+          html += '<div class="diff-col-hdr">';
+          for(var i=0;i<n;i++) html += '<div>GTIN#'+(i+1)+'</div>';
+          html += '</div>';
+          html += '<div class="drow"><div class="dvals">';
+          products.forEach(function(p, i) {
+              html += '<div class="dval" style="font-size:10px; max-height:100px; overflow-y:auto; border-right:1px solid #eee; padding:6px; font-weight:normal;">' + (esc(p.description) || '<i style="color:#ccc">Empty</i>') + '</div>';
+          });
+          html += '</div></div></div>';
       }
       
       showBody(html);
