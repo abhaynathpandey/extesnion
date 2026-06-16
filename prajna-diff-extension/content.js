@@ -584,10 +584,13 @@ function extractProducts(){
 
       // 4. ULTIMATE FALLBACK: Search entire document for an image that matches the product name
       if(srcs.length===0 && prodName){
+         var searchName = prodName.substring(0, 15).toLowerCase();
          var allPageImgs = document.querySelectorAll('img');
          for(var ix=0; ix<allPageImgs.length; ix++){
              var img = allPageImgs[ix];
-             if((img.alt && img.alt.includes(prodName.substring(0, 15))) || (img.title && img.title.includes(prodName.substring(0, 15)))) {
+             var alt = (img.alt || '').toLowerCase();
+             var tit = (img.title || '').toLowerCase();
+             if(alt.includes(searchName) || tit.includes(searchName)) {
                  var s=img.getAttribute('data-src')||img.src||'';
                  if(s && s.indexOf('data:')<0) { srcs.push(s); break; }
              }
@@ -649,6 +652,9 @@ function extractProducts(){
       for(var i=0;i<numGTINs;i++){
         vals.push(valCells[i] ? cleanVal(valCells[i].innerText.trim()) : '');
       }
+      
+      console.log("🤖 DupCheck Debug: ROW | Label:", label, "| Values:", vals);
+
       if(vals.every(function(v){return !v;})) continue;
 
       for(var i=0;i<prods.length;i++){
@@ -966,6 +972,38 @@ function runAnalysis(manual){
       
       var html = '<div class="status-line">'+n+' GTINs Analyzed by Gemini Vision AI</div>';
       
+      // Render Images
+      html += '<div class="img-section" style="animation:slideUp .4s .1s ease both;"><div class="img-sec-hdr">Extracted Images</div><div class="multi-scroll"><div style="display:flex;gap:1px;background:#f0f0f0;">';
+      products.forEach(function(p, i){
+         html += '<div class="img-cell"><div class="img-lbl">GTIN#'+(i+1)+'</div><div style="display:flex; flex-wrap:wrap; gap:4px; justify-content:center;">';
+         var allImgs = [];
+         if (p.imgs_main) allImgs.push.apply(allImgs, p.imgs_main);
+         else if (p.img1) allImgs.push(p.img1);
+         if (p.imgs_sec) allImgs.push.apply(allImgs, p.imgs_sec);
+         else if (p.img2) allImgs.push(p.img2);
+         if (p.imageUrls && allImgs.length === 0) allImgs.push.apply(allImgs, p.imageUrls);
+
+         // unique images only
+         allImgs = allImgs.filter(function(item, pos) { return allImgs.indexOf(item) === pos; });
+
+         if(allImgs.length > 0) {
+             allImgs.forEach(function(src) {
+                 html += '<img src="'+esc(src)+'" onerror="this.style.display=\'none\'" style="width:40px; height:40px; object-fit:contain; border-radius:4px; border:1px solid #ddd;">';
+             });
+         } else {
+             html += '<div style="font-size:8px;color:#aaa;padding:20px 0;">NO IMAGES</div>';
+         }
+         html += '</div></div>';
+      });
+      html += '</div></div></div>';
+
+      // Render Descriptions
+      html += '<div class="diff-table" style="animation:slideUp .4s .1s ease both;"><div class="diff-hdr" style="background:#fafafa;color:#555;border-bottom:1px solid #eee;">Descriptions</div><div class="drow"><div class="dvals">';
+      products.forEach(function(p, i) {
+          html += '<div class="dval" style="font-size:10px; max-height:100px; overflow-y:auto; border-right:1px solid #eee; padding:6px;">' + (esc(p.description) || '<i style="color:#ccc">Empty</i>') + '</div>';
+      });
+      html += '</div></div></div>';
+
       // Render Vertical Checks (Bad Data)
       var badData = apiResult.vertical_checks ? apiResult.vertical_checks.filter(function(v){ return v.has_bad_data; }) : [];
       if (badData.length > 0) {

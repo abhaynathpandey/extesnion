@@ -152,8 +152,10 @@ async def process_batch_analysis(products):
     I am providing you with multiple product listings. Each product has a product_id, title, description, text attributes, and images.
     
     Task Phase 1: Vertical Check (Bad Data)
-    For each product individually, compare its visually extracted specifications (from its images) against its 'Text Attributes', 'Product Title', and 'Description'.
-    Identify any clear contradictions (e.g., image shows "2-Pack" but text says "Count: 1", or description mentions "Stainless Steel" but specs say "Plastic"). If there is a contradiction between any of these fields (image vs text, or description vs specs), flag it as having 'bad data'.
+    For each product individually, perform OCR to extract ONLY the TEXT written on its images. 
+    IMPORTANT: You must IGNORE the visual appearance, shapes, or subjects depicted in the images (e.g., do not flag an item just because the image looks like a Pokemon instead of a toiletry bag). ONLY evaluate the actual text/words written on the image. If there is NO text written on the image, consider the image check to have PASSED and do not flag it.
+    Compare the text written on the images against the 'Text Attributes', 'Product Title', and 'Description'.
+    Identify any clear contradictions (e.g., text on the image says "2-Pack" but text attributes say "Count: 1", or description mentions "Stainless Steel" but text on the image says "Plastic"). If there is a contradiction, flag it as having 'bad data'.
 
     Task Phase 2: Horizontal Check (Duplicate Clustering)
     For all products that DO NOT have bad data (i.e., they passed Phase 1), compare them against each other using their Titles, Descriptions, Attributes, and Images.

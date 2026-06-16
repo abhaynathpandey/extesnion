@@ -61,13 +61,30 @@ window.analyzeBatchWithGemini = async function(products) {
   try {
     const payloadProducts = products.map(p => {
       const imageUrls = [];
-      if (p.img1) imageUrls.push(p.img1);
-      if (p.img2) imageUrls.push(p.img2);
+      if (p.imgs_main && p.imgs_main.length > 0) {
+          imageUrls.push(...p.imgs_main);
+      } else if (p.img1) {
+          imageUrls.push(p.img1);
+      }
       
+      if (p.imgs_sec && p.imgs_sec.length > 0) {
+          imageUrls.push(...p.imgs_sec);
+      } else if (p.img2) {
+          imageUrls.push(p.img2);
+      }
+      
+      let finalDesc = p.description || '';
+      // Fallback: If description was parsed as a regular attribute by mistake, extract it here
+      for (const [key, value] of Object.entries(p.attrs || {})) {
+          if (key.toLowerCase().includes('desc')) {
+              finalDesc += '\n' + value;
+          }
+      }
+
       return {
         id: p.gtin || p.name || 'Unknown',
         title: p.name || '',
-        description: p.description || '',
+        description: finalDesc.trim(),
         attributes: p.attrs || {},
         imageUrls: imageUrls
       };
