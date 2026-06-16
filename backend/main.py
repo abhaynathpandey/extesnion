@@ -153,12 +153,13 @@ async def process_batch_analysis(products):
     
     Task Phase 1: Vertical Check (Bad Data)
     For each product individually, perform OCR to extract ONLY the TEXT written on its images. 
-    IMPORTANT: You must IGNORE the visual appearance, shapes, or subjects depicted in the images (e.g., do not flag an item just because the image looks like a Pokemon instead of a toiletry bag). ONLY evaluate the actual text/words written on the image. If there is NO text written on the image, consider the image check to have PASSED and do not flag it.
+    CRITICAL INSTRUCTION: You must act PURELY as an OCR engine. You are completely BLIND to the objects, colors, shapes, or visual representations in the image. DO NOT infer attributes (like "the object is blue" or "the object is a Pokemon") from the visual content. ONLY evaluate the actual literal text/words written on the image. If there is NO text written on the image, consider the image check to have PASSED and do not flag it.
     Compare the text written on the images against the 'Text Attributes', 'Product Title', and 'Description'.
     Identify any clear contradictions (e.g., text on the image says "2-Pack" but text attributes say "Count: 1", or description mentions "Stainless Steel" but text on the image says "Plastic"). If there is a contradiction, flag it as having 'bad data'.
 
     Task Phase 2: Horizontal Check (Duplicate Clustering)
-    For all products that DO NOT have bad data (i.e., they passed Phase 1), compare them against each other using their Titles, Descriptions, Attributes, and Images.
+    For all products that DO NOT have bad data (i.e., they passed Phase 1), compare them against each other using their Titles, Descriptions, Attributes, and the TEXT extracted from their Images.
+    CRITICAL INSTRUCTION FOR PHASE 2: Just like Phase 1, you must remain COMPLETELY BLIND to the visual objects, colors, or patterns in the images (e.g., do not separate them into different clusters just because one image shows a 'grey deer-pattern' and the other shows a 'blue tulip-pattern'). ONLY use the literal text written on the images to differentiate them.
     Determine if they are identical items (duplicates), variants, or completely different items.
     Group similar/identical items into clusters. If a product is unique, it goes into its own cluster.
     
@@ -168,12 +169,12 @@ async def process_batch_analysis(products):
         {
           "product_id": "string",
           "has_bad_data": boolean,
-          "reason": "string (brief explanation if bad data is found, else empty)",
+          "reason": "string (A HIGHLY DESCRIPTIVE explanation of exactly what text was read from the image, what text was read from the table/description, and exactly where the contradiction lies. Be specific and wordy.)",
           "mismatch_details": [
             {
-              "field": "string (the attribute in question)",
-              "imageValue": "string",
-              "textValue": "string"
+              "field": "string (the exact attribute or description field in question)",
+              "imageValue": "string (the exact text read from the image)",
+              "textValue": "string (the exact text from the product attributes)"
             }
           ]
         }
@@ -182,7 +183,7 @@ async def process_batch_analysis(products):
         {
           "cluster_name": "string (e.g., 'Cluster 1')",
           "product_ids": ["string", "string"],
-          "reason": "string (explain why these products are grouped together)"
+          "reason": "string (A HIGHLY DESCRIPTIVE explanation of exactly why these products belong together, and exactly what specific attributes/text in the table differentiate them from the OTHER clusters. Explicitly name the table fields that differ, e.g., 'These items share Size X, whereas Cluster 2 has Size Y in the Size attribute field.')"
         }
       ]
     }

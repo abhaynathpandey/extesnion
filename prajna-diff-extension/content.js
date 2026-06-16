@@ -447,31 +447,57 @@ function makeProduct(idx){
 
 function clickReadMore(){
   var allLinks = document.querySelectorAll('a,button,span,[class*="read-more"],[class*="readmore"]');
-  var clicked = 0;
   for(var i=0;i<allLinks.length;i++){
-    var el=allLinks[i];
-    var txt=(el.innerText||el.textContent||'').trim().toLowerCase();
-    if(txt==='read more'||txt==='show more'){
-      try{ el.click(); clicked++; }catch(e){}
-    }
+    var txt=(allLinks[i].innerText||allLinks[i].textContent||'').trim().toLowerCase();
+    if(txt==='read more'||txt==='show more') { try{ allLinks[i].click(); }catch(e){} }
   }
-  return clicked;
 }
 
-// IMPROVEMENT 1: Async read-more — waits for React DOM to settle after clicking
-// Fixes intermittent blank/truncated descriptions caused by React batched state updates
+window.__dupHarvestedImages = {};
+
 function waitForReadMore(cb){
-  var clicked = clickReadMore();
-  if(!clicked) return cb();
-  var timer;
-  var obs = new MutationObserver(function(){
-    clearTimeout(timer);
-    // Wait 150ms of DOM silence before proceeding
-    timer = setTimeout(function(){ obs.disconnect(); cb(); }, 150);
-  });
-  obs.observe(document.body,{childList:true,subtree:true,characterData:true});
-  // Hard timeout: never wait more than 2.5s regardless
-  setTimeout(function(){ obs.disconnect(); cb(); }, 2500);
+  clickReadMore();
+  
+  var ticks = 0;
+  var maxTicks = 10; // 3 seconds total (10 * 300ms)
+  
+  var interval = setInterval(function() {
+      // 1. Harvest images from all image rows
+      var keyRows = document.querySelectorAll('[class*="key-row"]');
+      for(var r=0; r<keyRows.length; r++){
+          var lblEl = keyRows[r].querySelector('[class*="stick"]');
+          if(!lblEl) continue;
+          var ll = (lblEl.innerText || '').toLowerCase();
+          if(ll.indexOf('image')>=0 || ll.indexOf('picture')>=0 || ll.indexOf('photo')>=0) {
+              var cells = keyRows[r].querySelectorAll('[class*="group-gtin-column-cell"]:not([class*="stick"])');
+              if(!cells.length) cells = keyRows[r].querySelectorAll('[class*="column"]');
+              for(var c=0; c<cells.length; c++) {
+                  if(!window.__dupHarvestedImages[c]) window.__dupHarvestedImages[c] = [];
+                  var imgs = cells[c].querySelectorAll('img');
+                  for(var ix=0; ix<imgs.length; ix++) {
+                      var s = imgs[ix].getAttribute('data-src')||imgs[ix].getAttribute('data-original')||imgs[ix].src||'';
+                      if(s && s.indexOf('data:')<0 && window.__dupHarvestedImages[c].indexOf(s)<0) {
+                          window.__dupHarvestedImages[c].push(s);
+                      }
+                  }
+                  
+                  // Also click the next arrow in this specific cell
+                  var arrow = cells[c].querySelector('button[class*="arrow"], button[class*="next"], [aria-label*="next image"], [aria-label*="Next"]');
+                  if(arrow) { try { arrow.click(); } catch(e){} }
+              }
+          }
+      }
+      
+      // Also click any global arrows just in case
+      var globalArrows = document.querySelectorAll('button[class*="arrow"], button[class*="next"], [aria-label*="next image"], [aria-label*="Next"]');
+      for(var i=0; i<globalArrows.length; i++) { try { globalArrows[i].click(); } catch(e){} }
+      
+      ticks++;
+      if(ticks >= maxTicks) {
+          clearInterval(interval);
+          cb();
+      }
+  }, 300);
 }
 
 // Parse bullet-point description text into structured key-value pairs
@@ -558,13 +584,18 @@ function extractProducts(){
     var getImgs = function(cell, rowIndex, prodName){
       var srcs=[];
       
+      // Pull harvested carousel images!
+      if(window.__dupHarvestedImages && window.__dupHarvestedImages[rowIndex] && window.__dupHarvestedImages[rowIndex].length > 0) {
+          srcs.push.apply(srcs, window.__dupHarvestedImages[rowIndex]);
+      }
+      
       if (cell) {
         // 1. Direct IMG tags
         var imgs=cell.querySelectorAll('img');
         for(var ix=0;ix<imgs.length;ix++){
           var el=imgs[ix];
           var s=el.getAttribute('data-src')||el.getAttribute('data-original')||el.src||el.getAttribute('src')||'';
-          if(s&&s.indexOf('data:')<0&&s.indexOf('blob:')<0&&s.length>10) { srcs.push(s); continue; }
+          if(s&&s.indexOf('data:')<0&&s.indexOf('blob:')<0&&s.length>10 && srcs.indexOf(s)<0) { srcs.push(s); }
         }
         
         // 2. Regex HTML for image extensions
@@ -668,6 +699,23 @@ function extractProducts(){
         }
         else prods[i].attrs[label]=v;
       }
+    }
+
+    // Brute force fallback for descriptions if they were missed (often outside key-row tables)
+    for(var i=0;i<prods.length;i++) {
+        if (!prods[i].description) {
+            var allTextDivs = document.querySelectorAll('div, span, p, h2, h3, h4');
+            var descText = '';
+            for(var j=0; j<allTextDivs.length; j++) {
+                var text = (allTextDivs[j].innerText || '').trim().toLowerCase();
+                if (text === 'product short description' || text === 'product long description' || text === 'description' || text === 'about this item') {
+                    // Usually the next sibling or parent's next sibling contains the actual text
+                    var next = allTextDivs[j].nextElementSibling;
+                    if (next) descText += '\n' + next.innerText;
+                }
+            }
+            if (descText.trim().length > 0) prods[i].description = descText.trim();
+        }
     }
 
     var valid=prods.filter(function(p){return p.name||Object.keys(p.attrs).length>2;});
