@@ -456,6 +456,9 @@ function clickReadMore(){
 window.__dupHarvestedImages = {};
 
 function waitForReadMore(cb){
+  // Reset the global harvested images so previous page runs don't contaminate new ones!
+  window.__dupHarvestedImages = {};
+  
   clickReadMore();
   
   var ticks = 0;
@@ -465,26 +468,22 @@ function waitForReadMore(cb){
       // 1. Harvest images from all image rows
       var keyRows = document.querySelectorAll('[class*="key-row"]');
       for(var r=0; r<keyRows.length; r++){
-          var lblEl = keyRows[r].querySelector('[class*="stick"]');
-          if(!lblEl) continue;
-          var ll = (lblEl.innerText || '').toLowerCase();
-          if(ll.indexOf('image')>=0 || ll.indexOf('picture')>=0 || ll.indexOf('photo')>=0) {
-              var cells = keyRows[r].querySelectorAll('[class*="group-gtin-column-cell"]:not([class*="stick"])');
-              if(!cells.length) cells = keyRows[r].querySelectorAll('[class*="column"]');
-              for(var c=0; c<cells.length; c++) {
-                  if(!window.__dupHarvestedImages[c]) window.__dupHarvestedImages[c] = [];
-                  var imgs = cells[c].querySelectorAll('img');
-                  for(var ix=0; ix<imgs.length; ix++) {
-                      var s = imgs[ix].getAttribute('data-src')||imgs[ix].getAttribute('data-original')||imgs[ix].src||'';
-                      if(s && s.indexOf('data:')<0 && window.__dupHarvestedImages[c].indexOf(s)<0) {
-                          window.__dupHarvestedImages[c].push(s);
-                      }
+          var cells = keyRows[r].querySelectorAll('[class*="group-gtin-column-cell"]:not([class*="stick"])');
+          if(!cells.length) cells = keyRows[r].querySelectorAll('[class*="column"]:not([class*="stick"])');
+          
+          for(var c=0; c<cells.length; c++) {
+              if(!window.__dupHarvestedImages[c]) window.__dupHarvestedImages[c] = [];
+              var imgs = cells[c].querySelectorAll('img');
+              for(var ix=0; ix<imgs.length; ix++) {
+                  var s = imgs[ix].getAttribute('data-src')||imgs[ix].getAttribute('data-original')||imgs[ix].src||'';
+                  if(s && s.indexOf('data:')<0 && window.__dupHarvestedImages[c].indexOf(s)<0) {
+                      window.__dupHarvestedImages[c].push(s);
                   }
-                  
-                  // Also click the next arrow in this specific cell
-                  var arrow = cells[c].querySelector('button[class*="arrow"], button[class*="next"], [aria-label*="next image"], [aria-label*="Next"]');
-                  if(arrow) { try { arrow.click(); } catch(e){} }
               }
+              
+              // Also click the next arrow in this specific cell
+              var arrow = cells[c].querySelector('button[class*="arrow"], button[class*="next"], [aria-label*="next image"], [aria-label*="Next"]');
+              if(arrow) { try { arrow.click(); } catch(e){} }
           }
       }
       
@@ -1004,8 +1003,8 @@ function runAnalysis(manual){
       if(scanTxt) scanTxt.textContent = 'AI Vision Analysis...';
       if(scanSub) scanSub.textContent = 'Checking images against text attributes';
 
-      // Call Backend API to run Gemini Batch Analysis
-      var apiResult = await window.analyzeBatchWithGemini(products);
+      // Call Backend API to run Gemini Batch Analysis (pass manual flag to bypass cache)
+      var apiResult = await window.analyzeBatchWithGemini(products, manual === true);
       
       // Expand panel width based on number of products
       var n = products.length;

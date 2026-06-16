@@ -3,10 +3,34 @@ import json
 import base64
 import asyncio
 import httpx
+import hashlib
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
 from dotenv import load_dotenv
+import hashlib
+
+CACHE_FILE = "ai_analysis_cache.json"
+
+def get_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_cache(cache_data):
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(cache_data, f)
+    except Exception as e:
+        print("Failed to save cache:", e)
+
+def get_cache_key(products):
+    payload_str = json.dumps(products, sort_keys=True)
+    return hashlib.md5(payload_str.encode('utf-8')).hexdigest()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -232,15 +256,27 @@ async def process_batch_analysis(products):
 def analyze_batch():
     req_data = request.get_json()
     products = req_data.get("products", [])
+    force_refresh = req_data.get("forceRefresh", False)
     
-    print(f"Received batch analysis request for {len(products)} products")
+    print(f"Received batch analysis request for {len(products)} products (Force Refresh: {force_refresh})")
     
     if not products:
         return jsonify({"status": "error", "message": "No products provided for analysis."}), 400
         
+    cache_key = get_cache_key(products)
+    cache = get_cache()
+    
+    if not force_refresh and cache_key in cache:
+        print(f"✅ Cache HIT! Returning cached AI result for key: {cache_key}")
+        return jsonify(cache[cache_key])
+        
+    print(f"❌ Cache MISS (or forced refresh). Running AI analysis...")
     result = asyncio.run(process_batch_analysis(products))
     
-    if result.get("status") == "error":
+    if result.get("status") == "success":
+        cache[cache_key] = result
+        save_cache(cache)
+    elif result.get("status") == "error":
         return jsonify(result), 500
         
     return jsonify(result)

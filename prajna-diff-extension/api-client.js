@@ -56,7 +56,7 @@ window.analyzeProductWithGemini = async function(product) {
 /**
  * Sends a batch of products to the backend for two-phase AI analysis.
  */
-window.analyzeBatchWithGemini = async function(products) {
+window.analyzeBatchWithGemini = async function(products, forceRefresh = false) {
   console.log(`🤖 DupCheck AI: Preparing to send batch of ${products.length} products to AI...`);
   try {
     const payloadProducts = products.map(p => {
@@ -90,13 +90,15 @@ window.analyzeBatchWithGemini = async function(products) {
       };
     });
 
-    const payload = { products: payloadProducts };
-    console.log(`🤖 DupCheck AI: Sending batch request to backend:`, payload);
+    const payload = { products: payloadProducts, forceRefresh: forceRefresh };
+    const payloadStr = JSON.stringify(payload);
+    
+    console.log(`🤖 DupCheck AI: Sending batch request to backend (Force Refresh: ${forceRefresh}):`, payload);
 
     const response = await fetch('http://127.0.0.1:8000/api/analyze-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: payloadStr
     });
 
     if (!response.ok) {
@@ -104,16 +106,16 @@ window.analyzeBatchWithGemini = async function(products) {
     }
 
     const result = await response.json();
-    console.log('🤖 DupCheck AI: Received BATCH response from backend:', result);
+    console.log('🤖 DupCheck AI: Received batch response:', result);
     
     if (result.status === 'success') {
-      return result.data; 
+      return result.data;
     } else {
       console.warn('🤖 DupCheck AI: Gemini Batch Analysis failed:', result.message);
       return null;
     }
   } catch (error) {
-    console.error('Failed to communicate with backend for batch analysis:', error);
+    console.error('Failed to communicate with backend:', error);
     return null;
   }
 };
