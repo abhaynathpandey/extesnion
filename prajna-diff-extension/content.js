@@ -283,7 +283,7 @@ function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 var SKIP_LABELS = [
   'action','reason codes','grouping','brand','product id','item id','item number',
   'upc','walmart item','seller','supplier','vendor','created','updated','sku',
-  'cluster','main image url','product secondary image url','image url',
+  'cluster',
   'defects','content audit report','image validation','item tracker','copy creation',
   'file status','report an issue','provide feedback','request access','show null data',
   'viewing','select cluster','select grouping','hs-v',
@@ -555,13 +555,57 @@ function extractProducts(){
     var prods = [];
     for(var i=0;i<numGTINs;i++) prods.push(makeProduct(i));
 
-    var getImgs = function(cell){
-      if(!cell) return [];
-      var imgs=cell.querySelectorAll('img'), srcs=[];
-      for(var ix=0;ix<imgs.length;ix++){
-        var s=imgs[ix].src||imgs[ix].getAttribute('src')||'';
-        if(s&&s.indexOf('data:')<0&&s.indexOf('blob:')<0&&s.length>10) srcs.push(s);
+    var getImgs = function(cell, rowIndex, prodName){
+      var srcs=[];
+      
+      if (cell) {
+        // 1. Direct IMG tags
+        var imgs=cell.querySelectorAll('img');
+        for(var ix=0;ix<imgs.length;ix++){
+          var el=imgs[ix];
+          var s=el.getAttribute('data-src')||el.getAttribute('data-original')||el.src||el.getAttribute('src')||'';
+          if(s&&s.indexOf('data:')<0&&s.indexOf('blob:')<0&&s.length>10) { srcs.push(s); continue; }
+        }
+        
+        // 2. Regex HTML for image extensions
+        if(srcs.length===0){
+          var html=cell.innerHTML||'';
+          var m=html.match(/https?:\/\/[^"'\s<>]+?\.(?:jpg|jpeg|png|webp)/i);
+          if(m) srcs.push(m[0]);
+        }
+
+        // 3. Regex HTML for ANY URL
+        if(srcs.length===0){
+          var html=cell.innerHTML||'';
+          var m=html.match(/https?:\/\/[^"'\s<>]+/i);
+          if(m) srcs.push(m[0]);
+        }
       }
+
+      // 4. ULTIMATE FALLBACK: Search entire document for an image that matches the product name
+      if(srcs.length===0 && prodName){
+         var allPageImgs = document.querySelectorAll('img');
+         for(var ix=0; ix<allPageImgs.length; ix++){
+             var img = allPageImgs[ix];
+             if((img.alt && img.alt.includes(prodName.substring(0, 15))) || (img.title && img.title.includes(prodName.substring(0, 15)))) {
+                 var s=img.getAttribute('data-src')||img.src||'';
+                 if(s && s.indexOf('data:')<0) { srcs.push(s); break; }
+             }
+         }
+      }
+
+      // 5. DESPERATION: Grab the first reasonably sized image on the page
+      if(srcs.length===0) {
+         var allPageImgs = document.querySelectorAll('img');
+         for(var ix=0; ix<allPageImgs.length; ix++){
+             var s=allPageImgs[ix].src||'';
+             if(s && s.indexOf('data:')<0 && s.indexOf('icon')<0 && s.indexOf('logo')<0 && (allPageImgs[ix].width > 100 || allPageImgs[ix].height > 100)) { 
+                 srcs.push(s); 
+                 break; 
+             }
+         }
+      }
+
       return srcs;
     };
 
@@ -575,14 +619,24 @@ function extractProducts(){
 
       var valCells=row.querySelectorAll('[class*="group-gtin-column-cell"]:not([class*="stick"])');
       if(!valCells.length) valCells=row.querySelectorAll('[class*="column"]');
+      if(!valCells.length) {
+         // Generic fallback: grab any div that isn't the label itself and has some text
+         var allDivs = Array.from(row.querySelectorAll('div')).filter(function(d){ return d !== labelEl && d.innerText.trim().length > 0; });
+         if(allDivs.length > 0) valCells = allDivs;
+      }
 
       // Image rows
-      if(ll.indexOf('image')>=0){
-        var isMain=ll.indexOf('secondary')<0&&ll.indexOf('main')>=0;
+      if(ll.indexOf('image')>=0 || ll.indexOf('picture')>=0 || ll.indexOf('photo')>=0){
+        console.warn("🤖 DupCheck Debug: Found an Image Row! Label =", label, "| valCells.length =", valCells.length);
+        if(valCells.length === 0) {
+            console.warn("🤖 DupCheck Debug: THE IMAGE ROW HAS NO DATA CELLS! Raw row HTML:", row.innerHTML.trim().substring(0, 200));
+        }
         var isSec=ll.indexOf('secondary')>=0;
+        var isMain=!isSec;
         if(isMain||isSec){
           for(var i=0;i<prods.length;i++){
-            var srcs=getImgs(valCells[i]);
+            var srcs=getImgs(valCells[i], i, prods[i].name);
+            console.log("🤖 DupCheck Debug: Extracted srcs for column", i, ":", srcs);
             if(isMain){ prods[i].imgs_main=srcs; if(srcs[0]) prods[i].img1=srcs[0]; }
             if(isSec){  prods[i].imgs_sec=srcs;  if(srcs[0]) prods[i].img2=srcs[0]; }
           }
@@ -601,7 +655,7 @@ function extractProducts(){
         var v=vals[i]||'';
         if(ll==='gtin'){ if(v&&v!==label) prods[i].gtin=v; }
         else if(ll.indexOf('product name')>=0||ll.indexOf('item name')>=0) prods[i].name=v;
-        else if(ll.indexOf('short desc')>=0||ll.indexOf('long desc')>=0||ll==='description'){
+        else if(ll.indexOf('short desc')>=0||ll.indexOf('long desc')>=0||ll.indexOf('description')>=0){
           // Append both short and long desc for maximum coverage
           if(prods[i].description && v) prods[i].description += ' ' + v;
           else if(v) prods[i].description = v;
@@ -896,535 +950,75 @@ function runAnalysis(manual){
       if(scanTxt) scanTxt.textContent = 'AI Vision Analysis...';
       if(scanSub) scanSub.textContent = 'Checking images against text attributes';
 
-      // Call Backend API to run Gemini Vision Checks concurrently
-      var apiResults = await Promise.all(products.map(function(p) {
-        if(window.analyzeProductWithGemini) {
-          return window.analyzeProductWithGemini(p);
-        }
-        return Promise.resolve(null);
-      }));
+      // Call Backend API to run Gemini Batch Analysis
+      var apiResult = await window.analyzeBatchWithGemini(products);
+      
+      // Expand panel width based on number of products
+      var n = products.length;
+      _panelWidth = Math.min(600, 360 + (n-2)*120);
+      wrap.style.setProperty('--panel-w', _panelWidth+'px');
+      host.style.setProperty('width', _panelWidth+'px','important');
 
-      // Helper to merge AI issues into the existing vertical issues array
-      function mergeAiIssues(vertArr, aiData) {
-        if (aiData && aiData.hasInconsistency && aiData.inconsistencies) {
-          aiData.inconsistencies.forEach(function(inc) {
-            vertArr.push({
-              type: 'AI Vision Mismatch',
-              attrKey: inc.field,
-              titleVal: inc.imageValue + ' (image)',
-              attrVal: inc.textValue + ' (text)',
-              msg: 'AI Warning: ' + inc.reason
-            });
-          });
-        }
-        return vertArr;
+      if (!apiResult) {
+         showBody('<div class="err">⚠ AI Batch Analysis Failed. Check console.</div>');
+         return;
       }
-
-      // ── 2-GTIN path (existing, unchanged) ──────────────────────
-      if(products.length===2){
-        _panelWidth = 360;
-        wrap.style.setProperty('--panel-w','360px');
-        host.style.setProperty('width','360px','important');
-        var p1=products[0],p2=products[1];
-        var cat=detectCat(p1,p2);
-        var nameSim=sim(p1.name,p2.name);
-        var keyDiffs=[],otherDiffs=[],matchAttrs=[];
-
-        // ── Product Name
-        // FIX(2025-06): only show as "matching" when names are TRULY identical after normalisation.
-        // Names that are similar-but-not-identical (e.g. differ by a model number) go to otherDiffs.
-        if(meaningful(p1.name,p2.name)){
-          otherDiffs.push({field:'Product Name',v1:cleanVal(p1.name),v2:cleanVal(p2.name)});
-        } else if(p1.name && norm(cleanVal(p1.name))===norm(cleanVal(p2.name))){
-          matchAttrs.push({k:'Product Name',v:trunc(p1.name,40)});
-        }
-        // (names that fall in the grey zone — similar but not identical — are silently omitted)
-
-        // ── Description (short + long) — use strict smart comparison
-        var d1=cleanVal(p1.description), d2=cleanVal(p2.description);
-        if(d1||d2){
-          if(meaningfulDesc(d1,d2)){
-            var descSim=sim(d1,d2);
-            otherDiffs.push({
-              field:'Product Description',
-              v1:d1||'—', v2:d2||'—',
-              simPct:Math.round(descSim*100)
-            });
-          } else {
-            matchAttrs.push({k:'Product Description',v:trunc(d1||d2,50)});
-          }
-          // ── Deep dive: extract structured bullet key-values from description
-          // Catches things like "STONE COLOR: D/VVS1" vs "STONE COLOR: D/VVS19"
-          var bulletDiffs = compareDescBullets(p1.description, p2.description);
-          bulletDiffs.forEach(function(bd){
-            // Add as key diff if it's a spec-type field, else other diff
-            var fk = bd.field.toLowerCase();
-            var isSpecField = fk.indexOf('stone')>=0||fk.indexOf('metal')>=0||
-                              fk.indexOf('color')>=0||fk.indexOf('colour')>=0||
-                              fk.indexOf('size')>=0||fk.indexOf('weight')>=0||
-                              fk.indexOf('carat')>=0||fk.indexOf('material')>=0||
-                              fk.indexOf('cut')>=0||fk.indexOf('purity')>=0||
-                              fk.indexOf('karat')>=0||fk.indexOf('capacity')>=0||
-                              fk.indexOf('dimension')>=0||fk.indexOf('watt')>=0||
-                              fk.indexOf('volt')>=0||fk.indexOf('processor')>=0||
-                              fk.indexOf('ram')>=0||fk.indexOf('storage')>=0||
-                              // IMPROVEMENT 6: compatibility fields from description bullets
-                              fk.indexOf('compat')>=0||fk.indexOf('fits')>=0||
-                              fk.indexOf('fitment')>=0||fk.indexOf('works with')>=0||
-                              fk.indexOf('designed for')>=0||fk.indexOf('vehicle')>=0||
-                              fk.indexOf('model number')>=0||fk.indexOf('part number')>=0||
-                              // Package/contents differences
-                              fk.indexOf('package')>=0||fk.indexOf('what you get')>=0||
-                              fk.indexOf('includes')>=0||fk.indexOf('contents')>=0;
-            if(isSpecField) keyDiffs.push(bd);
-            else otherDiffs.push(bd);
-          });
-        }
-
-        // ── All other attributes
-        var allK=[],seen={};
-        Object.keys(p1.attrs).forEach(function(k){if(!seen[k]){seen[k]=1;allK.push(k);}});
-        Object.keys(p2.attrs).forEach(function(k){if(!seen[k]){seen[k]=1;allK.push(k);}});
-        for(var i=0;i<allK.length;i++){
-          var k=allK[i]; if(shouldSkip(k)) continue;
-          var v1=p1.attrs[k]||'',v2=p2.attrs[k]||'';
-          if(meaningful(v1,v2,k)){
-            var d={field:k,v1:cleanVal(v1),v2:cleanVal(v2)};
-            if(isKey(k)) keyDiffs.push(d); else otherDiffs.push(d);
-          } else if(v1||v2) matchAttrs.push({k:k,v:trunc(cleanVal(v1)||cleanVal(v2),40)});
-        }
-
-        var mainSame=compareImgSets(p1.imgs_main||[p1.img1].filter(Boolean),p2.imgs_main||[p2.img1].filter(Boolean));
-        var secSame =compareImgSets(p1.imgs_sec||[p1.img2].filter(Boolean), p2.imgs_sec||[p2.img2].filter(Boolean));
-        
-        // Execute rule-based vertical checks and append AI vision checks
-        var vert1 = mergeAiIssues(checkVertical(p1), apiResults[0]);
-        var vert2 = mergeAiIssues(checkVertical(p2), apiResults[1]);
-        
-        _diffCount=keyDiffs.length+otherDiffs.length;
-        // IMPROVEMENT 8: progressive rendering — key diffs first, rest in next tick
-        // Agents see the most important info immediately without waiting for full render
-        renderPass1(p1,p2,cat,keyDiffs,otherDiffs,matchAttrs,mainSame,secSame,vert1,vert2);
-
-      // ── N-GTIN path (3+ GTINs) ──────────────────────────────────
-      } else {
-        // Auto-expand panel width: 360 base + 120 per extra GTIN, max 600
-        var n=products.length;
-        _panelWidth = Math.min(600, 360 + (n-2)*120);
-        wrap.style.setProperty('--panel-w', _panelWidth+'px');
-        host.style.setProperty('width', _panelWidth+'px','important');
-        var cat=detectCat(products[0],products[1]);
-        
-        // We need to inject API results into the N-GTIN rendering function.
-        // Modifying renderMulti to accept apiResults is needed. 
-        // For now, we will attach it directly to the product objects
-        products.forEach(function(p, idx) {
-          p.aiData = apiResults[idx];
+      
+      var html = '<div class="status-line">'+n+' GTINs Analyzed by Gemini Vision AI</div>';
+      
+      // Render Vertical Checks (Bad Data)
+      var badData = apiResult.vertical_checks ? apiResult.vertical_checks.filter(function(v){ return v.has_bad_data; }) : [];
+      if (badData.length > 0) {
+        html+='<div class="diff-table" style="animation:slideUp .4s .1s ease both">'+
+          '<div class="diff-hdr" style="background:#fdecea;border-color:#f5b7b7;color:#c0392b">'+
+            '🔴 Phase 1: Bad Data Detected <span class="diff-badge" style="background:#c0392b">'+badData.length+'</span>'+
+          '</div>';
+        badData.forEach(function(v){
+          html+='<div class="drow" style="background:#fff8e1; border-left:3px solid #c0392b; flex-direction:column; align-items:flex-start;">'+
+            '<div class="dlbl" style="color:#92400e; font-weight:bold; width:100%; border:none;">GTIN: ' + esc(v.product_id) + '</div>'+
+            '<div style="padding:4px 10px; font-size:11px;">' + esc(v.reason) + '</div>';
+            
+            if (v.mismatch_details && v.mismatch_details.length > 0) {
+              v.mismatch_details.forEach(function(m) {
+                 html += '<div style="padding:4px 10px; font-size:10px;">' +
+                         '<b>' + esc(m.field) + '</b>: Image shows <span style="color:red">"' + esc(m.imageValue) + '"</span>, Text says <span style="color:red">"' + esc(m.textValue) + '"</span></div>';
+              });
+            }
+          html+='</div>';
         });
-
-        renderMulti(products, cat);
+        html+='</div>';
+      } else {
+        html+='<div class="diff-table" style="animation:slideUp .4s .1s ease both">'+
+          '<div class="diff-hdr" style="background:#dcfce7;border-color:#bbf7d0;color:#15803d">'+
+            '🟢 Phase 1: No Bad Data Detected <span class="diff-badge" style="background:#15803d">0</span>'+
+          '</div></div>';
       }
 
-    }catch(e){ showBody('<div class="err">⚠ Error: '+esc(e.message)+'</div>'); }
+      // Render Horizontal Clusters
+      if (apiResult.horizontal_clustering && apiResult.horizontal_clustering.length > 0) {
+         html += '<div class="diff-table" style="animation:slideUp .4s .3s ease both">';
+         html += '<div class="diff-hdr" style="background:#f0f4ff;border-color:#c5c8ff;color:#3d3df5">'+
+            '🤖 Phase 2: AI Duplicate Clusters <span class="diff-badge" style="background:#3d3df5">'+apiResult.horizontal_clustering.length+'</span>'+
+          '</div>';
+          
+          apiResult.horizontal_clustering.forEach(function(c) {
+             html += '<div class="drow" style="flex-direction:column; align-items:flex-start;">' + 
+                 '<div style="font-weight:bold; color:#3d3df5; padding:5px 10px;">' + esc(c.cluster_name) + '</div>' + 
+                 '<div style="padding:2px 10px; font-size:11px; color:#555;"><b>Products:</b> ' + esc(c.product_ids.join(', ')) + '</div>' +
+                 '<div style="padding:4px 10px; font-size:11px;"><b>AI Reasoning:</b> ' + esc(c.reason) + '</div>' +
+                 '</div>';
+          });
+          html += '</div>';
+      }
+      
+      showBody(html);
+
+    }catch(e){ 
+      console.error(e);
+      showBody('<div class="err">⚠ Error: '+esc(e.message)+'</div>'); 
+    }
     }); // end waitForReadMore
   },manual?100:400);
-}
-
-// ═══ RENDER ════════════════════════════════════════════════════
-function imgCell(src,lbl){
-  return '<div class="img-cell"><div class="img-lbl">'+lbl+'</div>'+
-    (src?'<img src="'+src+'" onerror="this.style.display=\'none\'">':
-    '<div style="width:72px;height:72px;background:#f5f5f5;border-radius:4px;margin:0 auto;display:flex;align-items:center;justify-content:center;font-size:9px;color:#bbb;">None</div>')+
-    '</div>';
-}
-function diffRow(d,delay){
-  var e1=!d.v1||d.v1==='—', e2=!d.v2||d.v2==='—';
-  var simBadge = d.simPct!==undefined
-    ? '<span style="font-size:8px;background:rgba(0,0,0,.07);border-radius:8px;padding:1px 6px;font-weight:600;color:#666;margin-left:4px;">'+d.simPct+'% similar</span>'
-    : '';
-  return '<div class="drow" style="animation:slideUp .25s '+delay+'s ease both">'+
-    '<div class="dlbl">'+esc(d.field)+simBadge+'</div>'+
-    '<div class="dvals">'+
-      '<div class="dval'+(e1?' muted':' red')+'">'+esc(e1?'—':trunc(d.v1,160))+'</div>'+
-      '<div class="dval'+(e2?' muted':' grn')+'">'+esc(e2?'—':trunc(d.v2,160))+'</div>'+
-    '</div></div>';
-}
-// IMPROVEMENT 8: two-pass rendering — status + key diffs immediately, rest next tick
-function renderPass1(p1,p2,cat,keyDiffs,otherDiffs,matchAttrs,mainSame,secSame,vert1,vert2){
-  // Pass 1: render header + key diffs immediately so agents can see them right away
-  var totalDiffs=keyDiffs.length+otherDiffs.length;
-  var vertCount=(vert1?vert1.length:0)+(vert2?vert2.length:0);
-  var html='';
-  html+='<div class="status-line">'+esc(p1.gtin||'GTIN#1')+' vs '+esc(p2.gtin||'GTIN#2')+'</div>';
-  html+='<div class="cat-row">'+
-    '<div class="cat-box"><div class="cat-lbl">Category</div><div class="cat-val">'+esc((CAT_NAMES[cat]||cat).toUpperCase())+'</div></div>'+
-    '<div class="cat-box"><div class="cat-lbl">Cross-GTIN Diffs</div><div class="cat-val" style="color:'+(totalDiffs>0?'#c0392b':'#1a7f4b')+'">'+totalDiffs+(totalDiffs===0?' None':totalDiffs===1?' field':' fields')+'</div></div>'+
-    '<div class="cat-box"><div class="cat-lbl">Vertical</div><div class="cat-val" style="color:'+(vertCount>0?'#3d3df5':'#1a7f4b')+'">'+vertCount+(vertCount===0?' None':vertCount===1?' issue':' issues')+'</div></div>'+
-  '</div>';
-  if(keyDiffs.length){
-    html+='<div class="diff-table"><div class="diff-hdr">Key Differences <span class="diff-badge">'+keyDiffs.length+'</span></div>'+
-      '<div class="diff-col-hdr"><div>'+esc(trunc(p1.gtin,16))+'</div><div>'+esc(trunc(p2.gtin,16))+'</div></div>';
-    for(var i=0;i<keyDiffs.length;i++) html+=diffRow(keyDiffs[i],.05*i);
-    html+='</div>';
-  }
-  // Loading placeholder for the rest
-  html+='<div id="_pass2" style="opacity:.5;font-size:10px;text-align:center;padding:10px;color:#888">Loading other attributes…</div>';
-  showBody(html);
-  // Pass 2: fill in the rest (warnings, images, other diffs, matches, vertical)
-  setTimeout(function(){
-    render(p1,p2,cat,keyDiffs,otherDiffs,matchAttrs,mainSame,secSame,p1,p2,vert1,vert2);
-  },0);
-}
-
-function render(p1,p2,cat,keyDiffs,otherDiffs,matchAttrs,mainSame,secSame,rp1,rp2,vert1,vert2){
-  var totalDiffs=keyDiffs.length+otherDiffs.length;
-  var vertCount=(vert1?vert1.length:0)+(vert2?vert2.length:0);
-  var html='';
-
-  // STATUS LINE — GTINs + diff count summary only, no decision
-  html+='<div class="status-line">'+esc(p1.gtin||'GTIN#1')+' vs '+esc(p2.gtin||'GTIN#2')+'</div>';
-
-  // SUMMARY CHIPS — category + counts only
-  html+='<div class="cat-row">'+
-    '<div class="cat-box"><div class="cat-lbl">Category</div><div class="cat-val">'+esc((CAT_NAMES[cat]||cat).toUpperCase())+'</div></div>'+
-    '<div class="cat-box"><div class="cat-lbl">Cross-GTIN Diffs</div><div class="cat-val" style="color:'+(totalDiffs>0?'#c0392b':'#1a7f4b')+'">'+totalDiffs+(totalDiffs===0?' None':totalDiffs===1?' field':' fields')+'</div></div>'+
-    '<div class="cat-box"><div class="cat-lbl">Vertical</div><div class="cat-val" style="color:'+(vertCount>0?'#3d3df5':'#1a7f4b')+'">'+vertCount+(vertCount===0?' None':vertCount===1?' issue':' issues')+'</div></div>'+
-  '</div>';
-
-  // WARNINGS
-  var warnings=buildWarnings(keyDiffs,otherDiffs,mainSame,secSame,rp1,rp2,vert1,vert2);
-  if(warnings.length){
-    warnings.forEach(function(w){
-      var color=w.level==='high'?'#92400e':'#78350f';
-      var bg=w.level==='high'?'#fff8e1':'#fffbf0';
-      var brd=w.level==='high'?'#f0c040':'#fde68a';
-      html+='<div class="warn-banner" style="background:'+bg+';border-color:'+brd+'">'+
-        '<div class="warn-icon">'+(w.level==='high'?'⚠️':'ℹ️')+'</div>'+
-        '<div class="warn-body">'+
-          '<div class="warn-title" style="color:'+color+'">'+esc(w.title)+'</div>'+
-          '<div class="warn-list">'+w.items.map(function(i){return '• '+esc(i);}).join('<br>')+'</div>'+
-        '</div>'+
-      '</div>';
-    });
-  }
-
-  // IMAGES
-  if(mainSame!==null||secSame!==null){
-    html+='<div class="img-section">';
-    if(mainSame!==null){
-      html+='<div class="img-sec-hdr">Main Image</div>'+
-        '<div class="img-row">'+imgCell(rp1.img1,'GTIN#1')+imgCell(rp2.img1,'GTIN#2')+'</div>'+
-        '<div style="text-align:center;padding:4px 0 6px"><span class="img-badge '+(mainSame?'same':'diff')+'">'+(mainSame?'✓ SAME IMAGE':'⚠ DIFFERENT IMAGE')+'</span></div>';
-    }
-    if(secSame!==null){
-      html+='<div class="img-sec-hdr">Secondary Image</div>'+
-        '<div class="img-row">'+imgCell(rp1.img2,'GTIN#1')+imgCell(rp2.img2,'GTIN#2')+'</div>'+
-        '<div style="text-align:center;padding:4px 0 6px"><span class="img-badge '+(secSame?'same':'diff')+'">'+(secSame?'✓ SAME IMAGE':'⚠ DIFFERENT IMAGE')+'</span></div>';
-    }
-    html+='</div>';
-  }
-
-  // ── DIFFERENCES FIRST (most important) ──────────────────────────
-
-  // KEY DIFFERENCES
-  if(keyDiffs.length){
-    html+='<div class="diff-table"><div class="diff-hdr">Key Differences <span class="diff-badge">'+keyDiffs.length+'</span></div>'+
-      '<div class="diff-col-hdr"><div>'+esc(trunc(p1.gtin,16))+'</div><div>'+esc(trunc(p2.gtin,16))+'</div></div>';
-    for(var i=0;i<keyDiffs.length;i++) html+=diffRow(keyDiffs[i],.05*i);
-    html+='</div>';
-  }
-
-  // OTHER DIFFERENCES (including description and name diffs)
-  if(otherDiffs.length){
-    html+='<div class="diff-table" style="animation-delay:.1s">'+
-      '<div class="diff-hdr" style="background:#fef3c7;border-color:#fde68a;color:#92400e">Other Differences <span class="diff-badge" style="background:#92400e">'+otherDiffs.length+'</span></div>'+
-      '<div class="diff-col-hdr"><div>'+esc(trunc(p1.gtin,16))+'</div><div>'+esc(trunc(p2.gtin,16))+'</div></div>';
-    for(var i=0;i<otherDiffs.length;i++) html+=diffRow(otherDiffs[i],.05*i);
-    html+='</div>';
-  }
-
-  if(!keyDiffs.length&&!otherDiffs.length){
-    html+='<div class="match-all" style="text-align:center"><div style="font-size:13px;font-weight:700;color:#1a7f4b">✓ No cross-GTIN differences found</div><div style="font-size:11px;color:#555;margin-top:4px">All compared attributes are identical</div></div>';
-  }
-
-  // ── MATCHING ATTRIBUTES LAST ──────────────────────────────────
-  if(matchAttrs.length){
-    html+='<div class="match-all"><div class="match-all-hdr">✓ MATCHING ATTRIBUTES</div>';
-    matchAttrs.slice(0,15).forEach(function(a){
-      html+='<div class="match-row"><div class="match-field">'+esc(a.k)+'</div><div class="match-val">'+esc(a.v||'—')+'</div></div>';
-    });
-    html+='</div>';
-  }
-
-  // ── VERTICAL DISCREPANCY SECTION ─────────────────────────────
-  var hasVert = (vert1&&vert1.length)||(vert2&&vert2.length);
-  if(hasVert){
-    html+='<div class="diff-table" style="animation:slideUp .4s .35s ease both">'+
-      '<div class="diff-hdr" style="background:#f0f4ff;border-color:#c5c8ff;color:#3d3df5">'+
-        '⚡ Vertical Discrepancy '+
-        '<span class="diff-badge" style="background:#3d3df5">'+((vert1?vert1.length:0)+(vert2?vert2.length:0))+'</span>'+
-      '</div>';
-
-    // GTIN#1 issues
-    if(vert1&&vert1.length){
-      html+='<div style="padding:5px 10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#3d3df5;background:#f8f9ff;border-bottom:1px solid #eee;">GTIN#1 — Title vs Attributes</div>';
-      for(var i=0;i<vert1.length;i++){
-        html+='<div class="drow" style="animation:slideUp .25s '+(0.05*i)+'s ease both">'+
-          '<div class="dlbl">'+esc(vert1[i].type)+' — '+esc(vert1[i].attrKey)+'</div>'+
-          '<div class="dvals">'+
-            '<div class="dval red" style="flex:1">Title: <b>'+esc(vert1[i].titleVal)+'</b></div>'+
-            '<div class="dval" style="background:#fff8e1;color:#92400e;flex:1">Attr: <b>'+esc(vert1[i].attrVal)+'</b></div>'+
-          '</div>'+
-          '<div style="padding:3px 10px 5px;font-size:9px;color:#666;font-style:italic">'+esc(vert1[i].msg)+'</div>'+
-        '</div>';
-      }
-    }
-
-    // GTIN#2 issues
-    if(vert2&&vert2.length){
-      html+='<div style="padding:5px 10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#3d3df5;background:#f8f9ff;border-bottom:1px solid #eee;border-top:1px solid #eee;">GTIN#2 — Title vs Attributes</div>';
-      for(var i=0;i<vert2.length;i++){
-        html+='<div class="drow" style="animation:slideUp .25s '+(0.05*i)+'s ease both">'+
-          '<div class="dlbl">'+esc(vert2[i].type)+' — '+esc(vert2[i].attrKey)+'</div>'+
-          '<div class="dvals">'+
-            '<div class="dval red" style="flex:1">Title: <b>'+esc(vert2[i].titleVal)+'</b></div>'+
-            '<div class="dval" style="background:#fff8e1;color:#92400e;flex:1">Attr: <b>'+esc(vert2[i].attrVal)+'</b></div>'+
-          '</div>'+
-          '<div style="padding:3px 10px 5px;font-size:9px;color:#666;font-style:italic">'+esc(vert2[i].msg)+'</div>'+
-        '</div>';
-      }
-    }
-    html+='</div>';
-  }
-
-  showBody(html);
-}
-
-// ═══ RENDER MULTI (3+ GTINs) ════════════════════════════════════
-function renderMulti(products, cat){
-  var n = products.length;
-  _diffCount = 0;
-
-  // ── Collect all attribute keys across all products
-  var allK=[], seen={};
-  products.forEach(function(p){
-    Object.keys(p.attrs).forEach(function(k){
-      if(!seen[k]&&!shouldSkip(k)){seen[k]=1;allK.push(k);}
-    });
-  });
-
-  // ── For each attribute, check if any product differs from p0 (GTIN#1 as reference)
-  var ref = products[0];
-  var keyDiffRows=[], otherDiffRows=[], matchRows=[];
-
-  // Name
-  var nameVals = products.map(function(p){return cleanVal(p.name)||'—';});
-  var nameDiffers = nameVals.some(function(v){return norm(v)!==norm(nameVals[0]);});
-  if(nameDiffers) otherDiffRows.push({field:'Product Name', vals:nameVals});
-  else if(nameVals[0]!=='—') matchRows.push({k:'Product Name', v:trunc(nameVals[0],40)});
-
-  // Description
-  var descVals = products.map(function(p){return cleanVal(p.description)||'—';});
-  var descDiffers = descVals.some(function(v){return meaningfulDesc(v,descVals[0]);});
-  if(descDiffers) otherDiffRows.push({field:'Product Description', vals:descVals, simPct:Math.round(sim(descVals[0],descVals[1]||'')*100)});
-  else if(descVals[0]!=='—') matchRows.push({k:'Product Description', v:trunc(descVals[0],50)});
-
-  // Deep bullet parse across all products — find spec diffs buried in description
-  // Compare each product's description against GTIN#1 (reference)
-  if(products.length>=2){
-    var ref0 = products[0];
-    var refBullets = parseDescBullets(ref0.description||'');
-    for(var pi=1;pi<products.length;pi++){
-      var bDiffs = compareDescBullets(ref0.description||'', products[pi].description||'');
-      bDiffs.forEach(function(bd){
-        // Add as N-GTIN row: build vals array (—  for products not compared yet)
-        var vals = products.map(function(p,idx){
-          if(idx===0) return bd.v1;
-          if(idx===pi) return bd.v2;
-          // For other products, check their description too
-          var pBullets = parseDescBullets(p.description||'');
-          var fieldKey = bd.field.replace('Desc: ','');
-          return pBullets[fieldKey]||'—';
-        });
-        // Check if already added
-        var exists = keyDiffRows.some(function(r){return r.field===bd.field;}) ||
-                     otherDiffRows.some(function(r){return r.field===bd.field;});
-        if(!exists){
-          var fk=bd.field.toLowerCase();
-          var isSpec=fk.indexOf('stone')>=0||fk.indexOf('metal')>=0||fk.indexOf('color')>=0||
-                     fk.indexOf('carat')>=0||fk.indexOf('cut')>=0||fk.indexOf('purity')>=0||
-                     fk.indexOf('size')>=0||fk.indexOf('weight')>=0||fk.indexOf('watt')>=0;
-          if(isSpec) keyDiffRows.push({field:bd.field,vals:vals});
-          else otherDiffRows.push({field:bd.field,vals:vals});
-        }
-      });
-    }
-  }
-
-  allK.forEach(function(k){
-    var vals = products.map(function(p){return cleanVal(p.attrs[k])||'—';});
-    // Use meaningful() with field key — catches near-matches like Round Cut vs Round Brilliant Cut
-    var raw0 = products[0].attrs[k]||'';
-    var differs = vals.some(function(v,vi){
-      if(vi===0) return false;
-      var rawV = products[vi]?products[vi].attrs[k]||'':'';
-      return meaningful(raw0, rawV, k);
-    });
-    if(differs){
-      _diffCount++;
-      if(isKey(k)) keyDiffRows.push({field:k,vals:vals});
-      else otherDiffRows.push({field:k,vals:vals});
-    } else if(vals[0]!=='—'){
-      matchRows.push({k:k,v:trunc(vals[0],40)});
-    }
-  });
-
-  // ── Vertical checks on each product
-  var vertIssues=[];
-  products.forEach(function(p){
-    var v=checkVertical(p);
-    // Append AI issues if any
-    if (p.aiData && p.aiData.hasInconsistency && p.aiData.inconsistencies) {
-      p.aiData.inconsistencies.forEach(function(inc) {
-        v.push({
-          type: 'AI Vision Mismatch',
-          attrKey: inc.field,
-          titleVal: inc.imageValue + ' (image)',
-          attrVal: inc.textValue + ' (text)',
-          msg: 'AI Warning: ' + inc.reason
-        });
-      });
-    }
-    if(v&&v.length) v.forEach(function(issue){vertIssues.push({gtin:p.gtin,issue:issue});});
-  });
-
-  // ── Image comparison: all vs ref
-  var imgMainSame = products.every(function(p){
-    return compareImgSets(p.imgs_main||[p.img1].filter(Boolean), ref.imgs_main||[ref.img1].filter(Boolean))!==false;
-  });
-  var imgSecSame = products.every(function(p){
-    return compareImgSets(p.imgs_sec||[p.img2].filter(Boolean), ref.imgs_sec||[ref.img2].filter(Boolean))!==false;
-  });
-
-  // ── GTIN column header width
-  var colW = Math.max(60, Math.floor(310/n));
-
-  // ── Build HTML ──────────────────────────────────────────────────
-  var html='';
-
-  // Status
-  html+='<div class="status-line">'+n+' GTINs detected — comparing all vs GTIN#1</div>';
-
-  // Summary chips
-  html+='<div class="cat-row">'+
-    '<div class="cat-box"><div class="cat-lbl">Category</div><div class="cat-val">'+esc((CAT_NAMES[cat]||cat).toUpperCase())+'</div></div>'+
-    '<div class="cat-box"><div class="cat-lbl">GTINs</div><div class="cat-val" style="color:#3d3df5">'+n+'</div></div>'+
-    '<div class="cat-box"><div class="cat-lbl">Diffs</div><div class="cat-val" style="color:'+(_diffCount>0?'#c0392b':'#1a7f4b')+'">'+_diffCount+(_diffCount===0?' None':'')+' </div></div>'+
-  '</div>';
-
-  // Images
-  if(ref.img1||ref.img2){
-    html+='<div class="img-section">';
-    if(ref.img1){
-      html+='<div class="img-sec-hdr">Main Images <span style="font-size:8px;padding:1px 6px;border-radius:8px;font-weight:700;'+( imgMainSame?'background:#dcfce7;color:#15803d':'background:#fee2e2;color:#b91c1c')+'">'+(imgMainSame?'✓ ALL SAME':'⚠ DIFFER')+'</span></div>';
-      html+='<div class="multi-scroll"><div style="display:flex;gap:1px;background:#f0f0f0;">';
-      products.forEach(function(p,i){
-        html+=imgCell(p.img1||p.img2,'GTIN#'+(i+1));
-      });
-      html+='</div></div>';
-    }
-    if(ref.img2){
-      html+='<div class="img-sec-hdr" style="margin-top:2px">Secondary Images <span style="font-size:8px;padding:1px 6px;border-radius:8px;font-weight:700;'+(imgSecSame?'background:#dcfce7;color:#15803d':'background:#fee2e2;color:#b91c1c')+'">'+(imgSecSame?'✓ ALL SAME':'⚠ DIFFER')+'</span></div>';
-      html+='<div class="multi-scroll"><div style="display:flex;gap:1px;background:#f0f0f0;">';
-      products.forEach(function(p,i){
-        html+=imgCell(p.img2,'GTIN#'+(i+1));
-      });
-      html+='</div></div>';
-    }
-    html+='</div>';
-  }
-
-  // Helper to build multi-col diff table
-  function multiTable(title,rows,hdrStyle,badgeStyle){
-    if(!rows.length) return '';
-    // Column header row
-    var colHdr='<div style="display:flex;background:#f8f9fa;border-bottom:1px solid #f0f0f0;">';
-    products.forEach(function(p,i){
-      colHdr+='<div style="flex:1;padding:4px 8px;font-size:8px;font-weight:700;text-transform:uppercase;color:#aaa;border-right:1px solid #f0f0f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(trunc(p.gtin,14))+'</div>';
-    });
-    colHdr+='</div>';
-
-    var rowsHtml='';
-    rows.forEach(function(r,ri){
-      var refVal=norm(r.vals[0]);
-      var simBadge=r.simPct!==undefined?'<span style="font-size:8px;background:rgba(0,0,0,.07);border-radius:8px;padding:1px 6px;font-weight:600;color:#666;margin-left:4px;">'+r.simPct+'% similar</span>':'';
-      rowsHtml+='<div class="drow" style="animation:slideUp .2s '+(ri*0.04)+'s ease both">'+
-        '<div class="dlbl">'+esc(r.field)+simBadge+'</div>'+
-        '<div class="dvals">';
-      r.vals.forEach(function(v,vi){
-        var differs = vi>0 && norm(v)!==refVal && v!=='—';
-        var missing = v==='—';
-        var cls = missing?' muted': (vi===0?' grn': (differs?' red':' grn'));
-        rowsHtml+='<div class="dval'+cls+'" style="flex:1;min-width:0;">'+esc(trunc(v,90))+'</div>';
-      });
-      rowsHtml+='</div></div>';
-    });
-
-    return '<div class="diff-table" style="animation:slideUp .4s ease both">'+
-      '<div class="diff-hdr" style="'+hdrStyle+'">'+title+' <span class="diff-badge" style="'+badgeStyle+'">'+rows.length+'</span></div>'+
-      '<div class="multi-scroll">'+colHdr+rowsHtml+'</div>'+
-      '</div>';
-  }
-
-  // Key differences
-  html+=multiTable('Key Differences',keyDiffRows,
-    'background:#fdecea;border-color:#f5b7b7;color:#c0392b',
-    'background:#c0392b;color:#fff');
-
-  // Other differences
-  html+=multiTable('Other Differences',otherDiffRows,
-    'background:#fef3c7;border-color:#fde68a;color:#92400e',
-    'background:#92400e;color:#fff');
-
-  // Matching attributes
-  if(matchRows.length){
-    html+='<div class="match-all"><div class="match-all-hdr">✓ MATCHING ACROSS ALL GTINs</div>';
-    matchRows.slice(0,15).forEach(function(a){
-      html+='<div class="match-row"><div class="match-field">'+esc(a.k)+'</div><div class="match-val">'+esc(a.v||'—')+'</div></div>';
-    });
-    html+='</div>';
-  }
-
-  // No diffs
-  if(!keyDiffRows.length&&!otherDiffRows.length){
-    html+='<div class="match-all" style="text-align:center">'+
-      '<div style="font-size:13px;font-weight:700;color:#1a7f4b">✓ All '+n+' GTINs are identical</div>'+
-      '<div style="font-size:11px;color:#555;margin-top:4px">No attribute differences found across any GTIN</div>'+
-    '</div>';
-  }
-
-  // Vertical discrepancies
-  if(vertIssues.length){
-    html+='<div class="diff-table" style="animation:slideUp .4s .3s ease both">'+
-      '<div class="diff-hdr" style="background:#f0f4ff;border-color:#c5c8ff;color:#3d3df5">'+
-        '⚡ Vertical Discrepancy <span class="diff-badge" style="background:#3d3df5">'+vertIssues.length+'</span>'+
-      '</div>';
-    vertIssues.forEach(function(vi,i){
-      var gtinIdx=products.findIndex(function(p){return p.gtin===vi.gtin;});
-      var gtinLabel=gtinIdx>=0?'GTIN#'+(gtinIdx+1):vi.gtin;
-      html+='<div class="drow" style="animation:slideUp .2s '+(i*0.04)+'s ease both">'+
-        '<div class="dlbl">'+esc(gtinLabel)+' · '+esc(vi.issue.type)+' — '+esc(vi.issue.attrKey)+'</div>'+
-        '<div class="dvals">'+
-          '<div class="dval red" style="flex:1">Title: <b>'+esc(vi.issue.titleVal)+'</b></div>'+
-          '<div class="dval" style="background:#fff8e1;color:#92400e;flex:1">Attr: <b>'+esc(vi.issue.attrVal)+'</b></div>'+
-        '</div>'+
-        '<div style="padding:3px 10px 5px;font-size:9px;color:#666;font-style:italic">'+esc(vi.issue.msg)+'</div>'+
-      '</div>';
-    });
-    html+='</div>';
-  }
-
-  showBody(html);
 }
 
 } // end init()
