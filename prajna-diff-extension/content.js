@@ -241,7 +241,7 @@ shadow.getElementById('closebtn').onclick  = minimizePanel;
 shadow.getElementById('minbtn').onclick    = minimizePanel;
 shadow.getElementById('mbtn').onclick      = function(){ _minimized ? openPanel() : minimizePanel(); };
 shadow.getElementById('rerun').onclick     = function(){ runAnalysis(true); };
-shadow.getElementById('analyzebtn').onclick= function(){ runAnalysis(true); };
+shadow.getElementById('analyzebtn').onclick= function(){ runAnalysis(false); };
 window.__prajnaShow = function(){ openPanel(); runAnalysis(false); };
 
 // ── Keyboard shortcuts ───────────────────────────────────────────
@@ -263,7 +263,7 @@ document.addEventListener('keydown', function(e){
     e.preventDefault();
     _analyzed = false; // allow re-analysis
     openPanel();
-    runAnalysis(true);
+    runAnalysis(false);
   }
 }, true);
 
@@ -453,70 +453,12 @@ function clickReadMore(){
   }
 }
 
-window.__dupHarvestedImages = {};
-
 function waitForReadMore(cb){
-  // Reset the global harvested images so previous page runs don't contaminate new ones!
-  window.__dupHarvestedImages = {};
-  
   clickReadMore();
-  
-  var ticks = 0;
-  var maxTicks = 10; // 3 seconds total (10 * 300ms)
-  
-  var interval = setInterval(function() {
-      // 1. Harvest images from ALL rows, not just 'key-row', because the image header row sometimes lacks it
-      var keyRows = document.querySelectorAll('[class*="row"], tr');
-      for(var r=0; r<keyRows.length; r++){
-          var cells = keyRows[r].querySelectorAll('[class*="group-gtin-column-cell"]:not([class*="stick"])');
-          if(!cells.length) cells = keyRows[r].querySelectorAll('[class*="column"]:not([class*="stick"])');
-          if(!cells.length) cells = keyRows[r].querySelectorAll('td:not(:first-child)');
-          
-          if(!cells.length) continue;
-          for(var c=0; c<cells.length; c++) {
-              if(!window.__dupHarvestedImages[c]) window.__dupHarvestedImages[c] = [];
-              var allNodes = cells[c].querySelectorAll('*');
-              for(var ix=0; ix<allNodes.length; ix++) {
-                  var n = allNodes[ix];
-                  var s = '';
-                  if (n.tagName === 'IMG') {
-                      s = n.getAttribute('data-src') || n.getAttribute('data-original') || n.src || '';
-                  } else if (n.tagName === 'SOURCE') {
-                      s = n.srcset || '';
-                  } else if (n.style && n.style.backgroundImage) {
-                      var m = n.style.backgroundImage.match(/url\(['"]?(.*?)['"]?\)/);
-                      if (m) s = m[1];
-                  }
-                  
-                  if(s) {
-                      // handle srcset split
-                      var parts = s.split(',')[0].split(' ')[0];
-                      if (parts && parts.indexOf('data:')<0 && window.__dupHarvestedImages[c].indexOf(parts)<0) {
-                          window.__dupHarvestedImages[c].push(parts);
-                      }
-                  }
-              }
-              
-              // Also aggressively click ALL next/right arrows or thumbnails in this specific cell to force React to load new images
-              var arrows = cells[c].querySelectorAll('[class*="arrow" i], [class*="next" i], [class*="right" i], [aria-label*="next" i], [aria-label*="right" i], [class*="thumb" i]');
-              for(var k=0; k<arrows.length; k++) {
-                  try { 
-                      arrows[k].click(); 
-                  } catch(e){} 
-              }
-          }
-      }
-      
-      // Also click any global arrows just in case
-      var globalArrows = document.querySelectorAll('[class*="arrow" i], [class*="next" i], [class*="right" i], [aria-label*="next" i], [aria-label*="right" i]');
-      for(var i=0; i<globalArrows.length; i++) { try { globalArrows[i].click(); } catch(e){} }
-      
-      ticks++;
-      if(ticks >= maxTicks) {
-          clearInterval(interval);
-          cb();
-      }
-  }, 300);
+  // We no longer need a 3-second interval to harvest images via aggressive arrow clicking.
+  // Strategy 13 (LocalStorage) instantly extracts all images natively.
+  // We just wait a tiny bit (50ms) to allow 'Read More' text expansions to settle.
+  setTimeout(cb, 50);
 }
 
 // Parse bullet-point description text into structured key-value pairs
@@ -603,17 +545,20 @@ function extractProducts(){
     var getImgs = function(cell, rowIndex, prodName){
       var srcs=[];
       
-      // Pull harvested carousel images from Strategy 9
-      if(window.__dupHarvestedImages && window.__dupHarvestedImages[rowIndex] && window.__dupHarvestedImages[rowIndex].length > 0) {
-          srcs.push.apply(srcs, window.__dupHarvestedImages[rowIndex]);
-      }
+      // We no longer pull harvested carousel images from Strategy 9
+      // because DOM clicking timing is non-deterministic and breaks the AI cache.
+      // Strategy 13 (LocalStorage) reliably gets all images instantly.
       
       // Pull images from LocalStorage (Strategy 13)
       for(var k=0; k<localStorage.length; k++) {
           var val = localStorage.getItem(localStorage.key(k)) || "";
-          var matches = val.match(/https?:\/\/[^"\s<>'\\]+\.(jpg|jpeg|png|webp)/ig);
-          if(matches) {
-              srcs.push.apply(srcs, matches);
+          // Only extract images from this localStorage entry if it actually mentions our product!
+          // This prevents old browsing history in localStorage from polluting our image array and breaking the cache.
+          if(prodName && val.indexOf(prodName.substring(0, 15)) >= 0) {
+              var matches = val.match(/https?:\/\/[^"\s<>'\\]+\.(jpg|jpeg|png|webp)/ig);
+              if(matches) {
+                  srcs.push.apply(srcs, matches);
+              }
           }
       }
       
@@ -742,14 +687,7 @@ function extractProducts(){
       }
     }
 
-    // Fallback: If no explicit 'image' row was found, assign our aggressively harvested images
-    for(var i=0;i<prods.length;i++) {
-        if((!prods[i].imgs_main || prods[i].imgs_main.length === 0) && window.__dupHarvestedImages && window.__dupHarvestedImages[i] && window.__dupHarvestedImages[i].length > 0) {
-            prods[i].imgs_main = window.__dupHarvestedImages[i];
-            prods[i].img1 = window.__dupHarvestedImages[i][0];
-            console.log("🤖 DupCheck Debug: Assigned harvested images via fallback for GTIN", i, prods[i].imgs_main);
-        }
-    }
+    // (Harvested image fallback removed to stabilize caching)
 
     // Brute force fallback for descriptions if they were missed (often outside key-row tables)
     for(var i=0;i<prods.length;i++) {

@@ -29,7 +29,15 @@ def save_cache(cache_data):
         print("Failed to save cache:", e)
 
 def get_cache_key(products):
-    payload_str = json.dumps(products, sort_keys=True)
+    # Normalize products to ensure imageUrls order doesn't break the cache hash
+    normalized_products = []
+    for p in products:
+        norm_p = p.copy()
+        if 'imageUrls' in norm_p and isinstance(norm_p['imageUrls'], list):
+            norm_p['imageUrls'] = sorted(list(set(norm_p['imageUrls'])))
+        normalized_products.append(norm_p)
+        
+    payload_str = json.dumps(normalized_products, sort_keys=True)
     return hashlib.md5(payload_str.encode('utf-8')).hexdigest()
 
 # Load environment variables from .env file
@@ -179,6 +187,9 @@ async def process_batch_analysis(products):
     For each product individually, perform OCR to extract ONLY the VALUABLE TEXT SPECIFICATIONS written on its images (such as size, count, weight, model number, color, flavor, brand). 
     CRITICAL INSTRUCTION: Ignore irrelevant background text, logos, or marketing fluff (e.g., "New", "Sale", "Great Taste!"). ONLY evaluate whether the valid spec text extracted from the image matches or contradicts the Product Attributes and Title.
     If there is NO valuable spec text written on the image, consider the image check to have PASSED and do not flag it.
+    
+    IMPORTANT RULE AGAINST INFERENCE & MARKETING FLUFF: Do NOT flag contradictions based on subjective adjectives, brand names, or ambiguous marketing claims (e.g., "Natural", "Vibrant", "Pro", "Max", "Clear"). You must ONLY flag a mismatch if the text on the image provides an EXACT, EXPLICIT specification (e.g., "10g", "Blue", "2-Pack") that directly and undeniably contradicts a hard attribute in the table. Never make logical leaps, assumptions, or interpret promotional slogans as technical specifications.
+
     Identify any clear contradictions (e.g., text on the image says "2-Pack" but text attributes say "Count: 1", or description mentions "Stainless Steel" but text on the image says "Plastic"). If there is a contradiction, flag it as having 'bad data'.
 
     Task Phase 2: Horizontal Check (Duplicate Clustering)
