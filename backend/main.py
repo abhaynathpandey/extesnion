@@ -176,14 +176,14 @@ async def process_batch_analysis(products):
     I am providing you with multiple product listings. Each product has a product_id, title, description, text attributes, and images.
     
     Task Phase 1: Vertical Check (Bad Data)
-    For each product individually, perform OCR to extract ONLY the TEXT written on its images. 
-    CRITICAL INSTRUCTION: You must act PURELY as an OCR engine. You are completely BLIND to the objects, colors, shapes, or visual representations in the image. DO NOT infer attributes (like "the object is blue" or "the object is a Pokemon") from the visual content. ONLY evaluate the actual literal text/words written on the image. If there is NO text written on the image, consider the image check to have PASSED and do not flag it.
-    Compare the text written on the images against the 'Text Attributes', 'Product Title', and 'Description'.
+    For each product individually, perform OCR to extract ONLY the VALUABLE TEXT SPECIFICATIONS written on its images (such as size, count, weight, model number, color, flavor, brand). 
+    CRITICAL INSTRUCTION: Ignore irrelevant background text, logos, or marketing fluff (e.g., "New", "Sale", "Great Taste!"). ONLY evaluate whether the valid spec text extracted from the image matches or contradicts the Product Attributes and Title.
+    If there is NO valuable spec text written on the image, consider the image check to have PASSED and do not flag it.
     Identify any clear contradictions (e.g., text on the image says "2-Pack" but text attributes say "Count: 1", or description mentions "Stainless Steel" but text on the image says "Plastic"). If there is a contradiction, flag it as having 'bad data'.
 
     Task Phase 2: Horizontal Check (Duplicate Clustering)
     For all products that DO NOT have bad data (i.e., they passed Phase 1), compare them against each other using their Titles, Descriptions, Attributes, and the TEXT extracted from their Images.
-    CRITICAL INSTRUCTION FOR PHASE 2: Just like Phase 1, you must remain COMPLETELY BLIND to the visual objects, colors, or patterns in the images (e.g., do not separate them into different clusters just because one image shows a 'grey deer-pattern' and the other shows a 'blue tulip-pattern'). ONLY use the literal text written on the images to differentiate them.
+    CRITICAL INSTRUCTION FOR PHASE 2: Just like Phase 1, you must remain COMPLETELY BLIND to the visual objects, colors, or patterns in the images. ONLY use the literal text written on the images to differentiate them.
     Determine if they are identical items (duplicates), variants, or completely different items.
     Group similar/identical items into clusters. If a product is unique, it goes into its own cluster.
     
@@ -192,12 +192,13 @@ async def process_batch_analysis(products):
       "vertical_checks": [
         {
           "product_id": "string",
+          "extracted_image_specs": "string (A concise summary of the valid spec text extracted from the images, e.g. 'Size: Large, Count: 2'. If no valuable specs were found, put 'None')",
           "has_bad_data": boolean,
           "reason": "string (A HIGHLY DESCRIPTIVE explanation of exactly what text was read from the image, what text was read from the table/description, and exactly where the contradiction lies. Be specific and wordy.)",
           "mismatch_details": [
             {
               "field": "string (the exact attribute or description field in question)",
-              "imageValue": "string (the exact text read from the image)",
+              "imageValue": "string (the exact spec text read from the image)",
               "textValue": "string (the exact text from the product attributes)"
             }
           ]
@@ -216,23 +217,40 @@ async def process_batch_analysis(products):
     contents = [prompt]
     
     async with httpx.AsyncClient() as client:
+        # Keep track of unique image sets to avoid sending duplicates to Gemini
+        # Dictionary mapping a sorted tuple of URLs -> the Product ID that first used them
+        seen_image_sets = {}
+        
         for p in products:
             prod_id = p.get('id', 'Unknown')
             prod_text = f"\n\n--- PRODUCT ID: {prod_id} ---\nTitle: {p.get('title')}\nDescription: {p.get('description', '')}\nAttributes: {json.dumps(p.get('attributes', {}), indent=2)}\nImages for {prod_id}:"
             contents.append(prod_text)
             
             urls = p.get('imageUrls', [])
-            tasks = [fetch_image(client, url) for url in urls]
-            fetched_images = await asyncio.gather(*tasks)
             
-            has_img = False
-            for img in fetched_images:
-                if img:
-                    contents.append(img)
-                    has_img = True
-            
-            if not has_img:
+            if not urls:
                 contents.append("[No Images Provided for this product]")
+                continue
+                
+            # Create a deterministic hashable signature for this product's image set
+            url_signature = tuple(sorted(list(set(urls))))
+            
+            if url_signature in seen_image_sets:
+                first_prod_id = seen_image_sets[url_signature]
+                contents.append(f"[The images for this product are EXACTLY identical to the images provided above for PRODUCT ID: {first_prod_id}. Please reference those images.]")
+            else:
+                seen_image_sets[url_signature] = prod_id
+                tasks = [fetch_image(client, url) for url in urls]
+                fetched_images = await asyncio.gather(*tasks)
+                
+                has_img = False
+                for img in fetched_images:
+                    if img:
+                        contents.append(img)
+                        has_img = True
+                
+                if not has_img:
+                    contents.append("[No Images Provided for this product]")
 
     try:
         model = genai.GenerativeModel('gemini-3.5-flash')

@@ -13,7 +13,7 @@ document.getElementById('activateBtn').addEventListener('click', async () => {
   }
 
   try {
-    await chrome.scripting.executeScript({ target:{tabId:tab.id}, files:['api-client.js', 'content.js'] });
+    await chrome.scripting.executeScript({ target:{tabId:tab.id}, files:['api-client.js', 'content.js'], world: 'MAIN' });
   } catch(e) {
     statusEl.textContent = 'Inject error: ' + e.message;
     statusEl.className = 'status err';

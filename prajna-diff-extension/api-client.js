@@ -81,12 +81,15 @@ window.analyzeBatchWithGemini = async function(products, forceRefresh = false) {
           }
       }
 
+      // Deduplicate images exactly
+      const uniqueImageUrls = Array.from(new Set(imageUrls));
+
       return {
         id: p.gtin || p.name || 'Unknown',
         title: p.name || '',
         description: finalDesc.trim(),
         attributes: p.attrs || {},
-        imageUrls: imageUrls
+        imageUrls: uniqueImageUrls
       };
     });
 
